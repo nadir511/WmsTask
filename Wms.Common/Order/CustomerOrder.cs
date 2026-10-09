@@ -4,15 +4,22 @@ public class CustomerOrder
 {
     public required string OrderId { get; set; }
     public required string CustomerId { get; set; }
-    public List<OrderLine> OrderLines { get; set; } = default!;
+    public List<OrderLine> Lines { get; set; } = default!;
     public bool CompleteDeliveryRequired { get; set; }
-    public OrderPeriority OrderPeriority { get; set; }
+    public OrderPriority Priority { get; set; }
+    public OrderStatus Status { get; set; }
     public DateTime OrderDate { get; set; }
 
 }
-public enum OrderPeriority
+public enum OrderPriority
 {
     Low,
     Normal,
-    Heigh
+    High
+}
+public enum OrderStatus
+{
+    Released,
+    PartiallyAllocated,
+    ReadyForDelivery
 }
