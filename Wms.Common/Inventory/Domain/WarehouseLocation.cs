@@ -1,4 +1,4 @@
-﻿namespace Wms.Outbound.Inventory;
+﻿namespace Wms.Outbound.Inventory.Domain;
 
 public class WarehouseLocation
 {

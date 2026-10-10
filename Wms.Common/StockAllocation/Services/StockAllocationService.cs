@@ -1,25 +1,35 @@
-﻿using Wms.Outbound.Inventory;
-using Wms.Outbound.Order;
+﻿using System.Linq;
+using Wms.Outbound.Inventory.Domain;
+using Wms.Outbound.Inventory.Services;
+using Wms.Outbound.Order.Domain;
+using Wms.Outbound.Order.Services;
+using Wms.Outbound.StockAllocation.Domain;
 
-namespace Wms.Outbound.StockAllocation;
+namespace Wms.Outbound.StockAllocation.Services;
 
 public class StockAllocationService
 {
     private readonly List<CustomerOrder> _orders;
-    private readonly List<Sku> _skus;
-    private readonly List<StockAllocation> _allocations = [];
+    private List<Sku> _skus;
+    private readonly InventoryService _inventoryService;
+
+    private readonly List<OrderLineAllocation> _allocations = [];
     private readonly object _lockObject = new();
 
-    public StockAllocationService(List<CustomerOrder> orders, List<Sku> skus)
+    public StockAllocationService(InventoryService inventoryService, OrderService orderService)
     {
-        _orders = orders;
-        _skus = skus;
+        orderService.NewOrderReceived += OnNewOrderReceived;
+        _inventoryService = inventoryService;
     }
-    public bool AllocateReleaseOrders()
+    public async Task<IReadOnlyList<StockAllocationResult>> AllocateReleaseOrders()
     {
+        _skus = [.. (await _inventoryService.GetSkuListAsync())];
+
+        var results = new List<StockAllocationResult>();
+        var skusToUpdate = new Dictionary<string, Sku>(); 
+
         lock (_lockObject)
         {
-
             var availableBySku = _skus.ToDictionary(
                 sku => sku.SkuId,
                 sku => sku.ProductQuantity);
@@ -27,7 +37,7 @@ public class StockAllocationService
             // Iterate through the current allocations and subtract the allocated quantities from the available quantities
             foreach (var allocation in _allocations)
             {
-                    availableBySku[allocation.SkuId] -= allocation.Quantity;
+                availableBySku[allocation.SkuId] -= allocation.Quantity;
             }
 
             // Create a dictionary to track the allocated quantity for each order line
@@ -38,7 +48,8 @@ public class StockAllocationService
             // Prioritize orders based on their status, priority, and order date
             var queue = _orders
                 .Where(order =>
-                    order.Status == OrderStatus.Released)
+                    order.Status == OrderStatus.Released ||
+                    order.Status == OrderStatus.PartiallyAllocated)
                 .OrderByDescending(order => order.Priority)
                 .ThenBy(order => order.OrderDate)
                 .ThenBy(order => order.OrderId);
@@ -48,7 +59,7 @@ public class StockAllocationService
                 // created a copy of the availableBySku and allocatedByLine dictionaries
                 // if order cannot be fulfilled, original will not be modified
                 var currentAvailability = new Dictionary<string, int>(availableBySku);
-                var plan = new List<StockAllocation>();
+                var plan = new List<OrderLineAllocation>();
                 var canFulfillOrder = true;
 
                 foreach (var line in order.Lines)
@@ -83,7 +94,7 @@ public class StockAllocationService
                         currentAvailability[sku.SkuId] -= quantity;
                         outstanding -= quantity;
 
-                        plan.Add(new StockAllocation(
+                        plan.Add(new OrderLineAllocation(
                             order.OrderId, line.LineId, sku.SkuId, quantity));
                     }
 
@@ -94,6 +105,7 @@ public class StockAllocationService
                 if (order.CompleteDeliveryRequired && !canFulfillOrder)
                 {
                     UpdateOrderStatus(order, allocatedByLine);
+                    results.Add(new StockAllocationResult(order.OrderId, order.Status, 0));
                     continue;
                 }
 
@@ -105,16 +117,32 @@ public class StockAllocationService
                     var key = (allocation.OrderId, allocation.LineId);
                     allocatedByLine[key] =
                         allocatedByLine.GetValueOrDefault(key) + allocation.Quantity;
+
+                    // Track SKU for update
+                    if (!skusToUpdate.ContainsKey(allocation.SkuId))
+                    {
+                        skusToUpdate[allocation.SkuId] = _skus.First(s => s.SkuId == allocation.SkuId);
+                    }
+                    skusToUpdate[allocation.SkuId].ProductQuantity -= allocation.Quantity;
                 }
 
                 UpdateOrderStatus(order, allocatedByLine);
+                results.Add(new StockAllocationResult(
+                    order.OrderId,
+                    order.Status,
+                    plan.Sum(allocation => allocation.Quantity)));
             }
-
         }
 
-        return true;
+        // Update SKUs
+        foreach (var sku in skusToUpdate.Values)
+        {
+            await _inventoryService.UpdateSkuAsync(sku);
+        }
+
+        return results;
     }
-    private static void UpdateOrderStatus(CustomerOrder order,Dictionary<(string OrderId, int OrderLineId), int> allocatedByLine)
+    private static void UpdateOrderStatus(CustomerOrder order, Dictionary<(string OrderId, int OrderLineId), int> allocatedByLine)
     {
         var allLinesFulfilled = order.Lines.All(line =>
             allocatedByLine.GetValueOrDefault((order.OrderId, line.LineId)) >= line.Quantity);
@@ -131,6 +159,14 @@ public class StockAllocationService
         else
         {
             order.Status = OrderStatus.Released;
+        }
+    }
+    private void OnNewOrderReceived(CustomerOrder order)
+    {
+        lock (_lockObject)
+        {
+            _orders.Add(order);
+            AllocateReleaseOrders();
         }
     }
 }

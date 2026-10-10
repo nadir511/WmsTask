@@ -1,4 +1,4 @@
-﻿namespace Wms.Outbound.Order;
+﻿namespace Wms.Outbound.Order.Domain;
 
 public class CustomerOrder
 {
@@ -10,16 +10,4 @@ public class CustomerOrder
     public OrderStatus Status { get; set; }
     public DateTime OrderDate { get; set; }
 
-}
-public enum OrderPriority
-{
-    Low,
-    Normal,
-    High
-}
-public enum OrderStatus
-{
-    Released,
-    PartiallyAllocated,
-    ReadyForDelivery
 }

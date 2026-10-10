@@ -1,6 +1,6 @@
 ﻿using System.IO.Compression;
 
-namespace Wms.Outbound.Inventory;
+namespace Wms.Outbound.Inventory.Domain;
 
 public class Product
 {

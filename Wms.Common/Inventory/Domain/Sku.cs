@@ -1,6 +1,4 @@
-﻿using System.Net.Http.Headers;
-
-namespace Wms.Outbound.Inventory;
+﻿namespace Wms.Outbound.Inventory.Domain;
 
 public class Sku
 {

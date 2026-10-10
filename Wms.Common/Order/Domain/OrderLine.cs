@@ -1,6 +1,6 @@
 ﻿using Wms.Outbound.Inventory;
 
-namespace Wms.Outbound.Order
+namespace Wms.Outbound.Order.Domain
 {
     public class OrderLine
     {
