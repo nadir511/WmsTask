@@ -6,14 +6,14 @@ using Wms.Outbound.StockAllocation.Interfaces;
 
 namespace Wms.Outbound.StockAllocation.Services
 {
-    public class StockDeallocationService : IStockDeallocationService
+    public class StockOperationsService : IStockOperationsService
     {
         private readonly IInventoryService _inventoryService;
         private readonly IOrderService _orderService;
         private readonly IAllocationLedger _allocationLedger;
         private readonly StockAllocationService _stockAllocationService;
 
-        public StockDeallocationService(
+        public StockOperationsService(
             IInventoryService inventoryService,
             IOrderService orderService,
             IAllocationLedger allocationLedger,
@@ -27,20 +27,17 @@ namespace Wms.Outbound.StockAllocation.Services
             _ = ConsumeCancellationsAsync();
         }
 
-        public async Task DeallocateAsync(CustomerOrder order)
+        public async Task DeallocateOperationAsync(CustomerOrder order)
         {
             List<OrderLineAllocation> released;
 
             if (order.IsCancled)
             {
-                // Whole order cancelled: release every line allocation without
-                // inspecting individual line cancellation flags.
                 released = [.. _allocationLedger.ReleaseOrder(order.OrderId)];
-                order.Status = OrderStatus.Cancelled;
+                order.MarkCancelled();
             }
             else
             {
-                // Only specific lines were cancelled, only release just those.
                 released = [];
                 foreach (var line in order.Lines.Where(l => l.IsCancelled))
                 {
@@ -53,7 +50,6 @@ namespace Wms.Outbound.StockAllocation.Services
 
             await ReleaseSkuQuantitiesAsync(released);
 
-            // Calling to allocate free stock to any other orders that may now be able to be allocated.
             await _stockAllocationService.RunAllocationAsync();
         }
 
@@ -63,7 +59,7 @@ namespace Wms.Outbound.StockAllocation.Services
             {
                 try
                 {
-                    await DeallocateAsync(order);
+                    await DeallocateOperationAsync(order);
                 }
                 catch (Exception ex)
                 {
@@ -81,7 +77,7 @@ namespace Wms.Outbound.StockAllocation.Services
             foreach (var (skuId, quantity) in releasedBySku)
             {
                 var sku = await _inventoryService.GetSkuByIdAsync(skuId);
-                sku.ProductQuantity += quantity;
+                sku.Release(quantity);
                 await _inventoryService.UpdateSkuAsync(sku);
             }
         }

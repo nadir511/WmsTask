@@ -2,12 +2,12 @@
 
 namespace Wms.Outbound.StockAllocation.Interfaces
 {
-    public interface IStockDeallocationService
+    public interface IStockOperationsService
     {
         /// <summary>
         /// Releases allocated SKU quantities for a cancelled order or cancelled
         /// line(s) and makes that stock immediately available to other orders.
         /// </summary>
-        Task DeallocateAsync(CustomerOrder order);
+        Task DeallocateOperationAsync(CustomerOrder order);
     }
 }

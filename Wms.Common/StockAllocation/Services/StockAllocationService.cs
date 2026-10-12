@@ -71,7 +71,9 @@ public class StockAllocationService
 
                 if (order.CompleteDeliveryRequired && plan is null)
                 {
-                    UpdateOrderStatus(order, _allocationLedger);
+                    ReleaseOrderAllocations(order.OrderId, skuById, availableQtyBySku, skusToUpdate, _allocationLedger);
+
+                    order.RecalculateStatus(line => _allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId));
                     results.Add(new StockAllocationResult(order.OrderId, order.Status, 0));
                     continue;
                 }
@@ -79,7 +81,7 @@ public class StockAllocationService
                 var committedPlan = plan ?? [];
                 CommitAllocationPlan(committedPlan, skuById, availableQtyBySku, skusToUpdate, _allocationLedger);
 
-                UpdateOrderStatus(order, _allocationLedger);
+                order.RecalculateStatus(line => _allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId));
                 results.Add(new StockAllocationResult(
                     order.OrderId,
                     order.Status,
@@ -113,7 +115,7 @@ public class StockAllocationService
 
     private static Dictionary<string, List<Sku>> BuildSkusByProductId(IEnumerable<Sku> skus) =>
         skus
-            .Where(sku => !sku.Location.IsLocked)
+            .Where(sku => sku.Location.CanAllocateStock())
             .GroupBy(sku => sku.Product.ProductId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
 
@@ -131,12 +133,9 @@ public class StockAllocationService
         {
             var outstanding = line.Quantity - allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId);
 
-            //If the outstanding quantity is less than or equal to zero,
-            //it means that the line has already been fully allocated, so we can skip to the next line.
             if (outstanding <= 0)
                 continue;
 
-            // Find all SKUs which are required to fulfill the order line.
             var requiredSkus = skusByProductId.GetValueOrDefault(line.ProductId, []);
 
             foreach (var sku in requiredSkus)
@@ -179,32 +178,32 @@ public class StockAllocationService
                 skusToUpdate[allocation.SkuId] = sku;
             }
 
-            sku.ProductQuantity -= allocation.Quantity;
+            sku.Reserve(allocation.Quantity);
 
-            // Record the allocation in the ledger so that we can track which SKUs and quantities are committed to each order line.
             allocationLedger.Record(allocation);
         }
     }
 
-    private static void UpdateOrderStatus(CustomerOrder order, IAllocationLedger allocationLedger)
+    private static void ReleaseOrderAllocations(
+        string orderId,
+        Dictionary<string, Sku> skuById,
+        Dictionary<string, int> availableQtyBySku,
+        Dictionary<string, Sku> skusToUpdate,
+        IAllocationLedger allocationLedger)
     {
-        var activeLines = order.Lines.Where(line => !line.IsCancelled).ToList();
+        var releasedAllocations = allocationLedger.ReleaseOrder(orderId);
 
-        // If every line is cancelled, there is nothing left to deliver.
-        var allLinesFulfilled = activeLines.Count == 0 ||
-            activeLines.All(line => allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId) >= line.Quantity);
+        foreach (var allocation in releasedAllocations)
+        {
+            availableQtyBySku[allocation.SkuId] = availableQtyBySku.GetValueOrDefault(allocation.SkuId) + allocation.Quantity;
 
-        if (allLinesFulfilled)
-        {
-            order.Status = OrderStatus.ReadyForDelivery;
-        }
-        else if (activeLines.Any(line => allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId) > 0))
-        {
-            order.Status = OrderStatus.PartiallyAllocated;
-        }
-        else
-        {
-            order.Status = OrderStatus.Released;
+            if (!skusToUpdate.TryGetValue(allocation.SkuId, out var sku))
+            {
+                sku = skuById[allocation.SkuId];
+                skusToUpdate[allocation.SkuId] = sku;
+            }
+
+            sku.Release(allocation.Quantity);
         }
     }
 }

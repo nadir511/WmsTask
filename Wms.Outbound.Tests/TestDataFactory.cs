@@ -8,18 +8,15 @@ namespace Wms.Outbound.Tests
 {
     public class TestDataFactory
     {
-        public static CustomerOrder CreateDefaultOrder(string orderId = "ORD-001", int quantity = 30)
+        public static CustomerOrder CreateDefaultOrder(string orderId = "ORD-001", int quantity = 30, OrderLine orderLine = null, OrderPriority orderPriority = OrderPriority.High, bool completeDeliveryRequired = false)
         {
-            return new CustomerOrder
-            {
-                OrderId = orderId,
-                CustomerId = "CUST-001",
-                Lines = new List<OrderLine> { CreateDefaultOrderLine() },
-                Status = OrderStatus.Released,
-                Priority = OrderPriority.High,
-                OrderDate = DateTime.Now,
-                CompleteDeliveryRequired = false
-            };
+            return new CustomerOrder(
+                orderId,
+                "CUST-001",
+                new List<OrderLine> { orderLine ?? CreateDefaultOrderLine(1, "1", quantity) },
+                orderPriority,
+                DateTime.Now,
+                completeDeliveryRequired);
         }
 
         public static List<CustomerOrder> GetOrderList()
@@ -78,13 +75,11 @@ namespace Wms.Outbound.Tests
         }
         public static Sku CreateDefaultSku(string skuId = "SKU-001", int quantity = 100, Product product = null, WarehouseLocation location = null)
         {
-            return new Sku
-            {
-                SkuId = skuId,
-                ProductQuantity = quantity,
-                Product = product ?? new Product { ProductId = "1", ProductName = "Barf" },
-                Location = location ?? new WarehouseLocation { Id = "LOC-001", IsLocked = false }
-            };
+            return new Sku(
+                skuId,
+                quantity,
+                product ?? new Product { ProductId = "1", ProductName = "Barf" },
+                location ?? new WarehouseLocation { Id = "LOC-001", IsLocked = false });
         }
         public static List<Sku> GetSkuList()
         {
