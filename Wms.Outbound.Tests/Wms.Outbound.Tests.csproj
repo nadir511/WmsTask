@@ -16,16 +16,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Wms.Common\Wms.Outbound.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="Inventory\" />
     <Folder Include="Order\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Wms.Outbound\Wms.Outbound.csproj" />
   </ItemGroup>
 
 </Project>
