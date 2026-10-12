@@ -3,10 +3,10 @@ using Wms.Outbound.Inventory.Interfaces;
 
 namespace Wms.Outbound.Inventory.Services
 {
-    public class InventoryService 
+    public class InventoryService : IInventoryService
     {
         private readonly IInventoryRepository _inventoryRepository;
-        
+
         public InventoryService(IInventoryRepository inventoryRepository)
         {
             _inventoryRepository = inventoryRepository;
