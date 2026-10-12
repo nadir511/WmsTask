@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using NSubstitute;
 using Wms.Outbound.Inventory.Domain;
 using Wms.Outbound.Inventory.Interfaces;
@@ -12,57 +13,73 @@ namespace Wms.Outbound.Tests.StockAllocation
     public class StockAllocationServiceTests
     {
         [Fact]
-        public async Task AllocateReleaseOrders_ShouldAllocateOrderSuccessfullyWhenSufficientStockAvailable()
+        public async Task AllocateReleaseOrders_OneOrderWriteToChannel_ReturnsReadyForDelivery()
         {
             // Arrange
             var inventoryService = Substitute.For<IInventoryService>();
             var orderService = Substitute.For<IOrderService>();
 
-            var location = new WarehouseLocation { Id = "LOC-001", IsLocked = false };
-            var product = new Product { ProductId = "1", ProductName = "Orange Juice" };
+            var location = TestDataFactory.CreateDefaultLocation();
+            var product = TestDataFactory.CreateDefaultProduct();
 
-            var sku = new Sku
-            {
-                SkuId = "SKU-001",
-                ProductQuantity = 100,
-                Product = product,
-                Location = location
-            };
+            var sku = TestDataFactory.CreateDefaultSku();
 
             inventoryService.GetSkuListAsync().Returns(new List<Sku> { sku });
             inventoryService.UpdateSkuAsync(Arg.Any<Sku>()).Returns(true);
 
-            var orderLine = new OrderLine(1, "1", 30);
 
+            var order = TestDataFactory.CreateDefaultOrder();
 
-            var OrdersLines = new List<OrderLine> { orderLine };
+            var newOrders = Channel.CreateUnbounded<CustomerOrder>();
+            orderService.NewOrders.Returns(newOrders.Reader);
 
-            var order = new CustomerOrder
-            {
-                OrderId = "ORD-001",
-                CustomerId = "CUST-001",
-                Lines = new List<OrderLine> { orderLine },
-                Status = OrderStatus.Released,
-                Priority = OrderPriority.High,
-                OrderDate = DateTime.Now,
-                CompleteDeliveryRequired = false
-            };
+            var orderCache = new OrderCache();
+            orderCache.AddOrUpdate(order);
 
-            orderService.GetCachedOrderListAsync().Returns(new List<CustomerOrder> { order });
-
-            var service = new StockAllocationService(inventoryService, orderService);
+            var allocationLedger = new AllocationLedger();
 
             // Act
-            var results = await service.AllocateReleaseOrdersAsync();
+            var allocationService = new StockAllocationService(inventoryService, orderService, orderCache, allocationLedger);
+            await newOrders.Writer.WriteAsync(order);
+
+            var deadline = DateTime.UtcNow.AddSeconds(2);
+            while (order.Status == OrderStatus.Released && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(10);
+            }
 
             // Assert
-            Assert.NotNull(results);
-            Assert.Single(results);
-            Assert.Equal("ORD-001", results[0].OrderId);
-            Assert.Equal(OrderStatus.ReadyForDelivery, results[0].Status);
-            Assert.Equal(30, results[0].NewlyAllocatedQuantity);
-
+            Assert.Equal(OrderStatus.ReadyForDelivery, order.Status);
             await inventoryService.Received(1).UpdateSkuAsync(Arg.Is<Sku>(s => s.SkuId == "SKU-001" && s.ProductQuantity == 70));
+        }
+        [Fact]
+        public async Task RunAllocationAsync_WithTwoOrdersOneReadyAndOtherPartiallyAllocated_ReturnsReadyForDeliveryAndPartiallyAllocated()
+        {
+            // Arrange
+            var inventoryService = Substitute.For<IInventoryService>();
+            var orderService = Substitute.For<IOrderService>();
+
+            var location = TestDataFactory.CreateDefaultLocation();
+            var product = TestDataFactory.CreateDefaultProduct();
+            var sku = TestDataFactory.CreateDefaultSku();
+
+            inventoryService.GetSkuListAsync().Returns(new List<Sku> { sku });
+            inventoryService.UpdateSkuAsync(Arg.Any<Sku>()).Returns(true);
+            var order1 = TestDataFactory.CreateDefaultOrder("ORD-001", 30);
+            var order2 = TestDataFactory.CreateDefaultOrder("ORD-002", 80);
+           
+
+            var orderCache = new OrderCache();
+            orderCache.AddOrUpdate(order1);
+            orderCache.AddOrUpdate(order2);
+            var allocationLedger = new AllocationLedger();
+            // Act
+            var allocationService = new StockAllocationService(inventoryService, orderService, orderCache, allocationLedger);
+
+            var result = await allocationService.RunAllocationAsync();
+            // Assert
+            Assert.Equal(OrderStatus.ReadyForDelivery, order1.Status);
+            Assert.Equal(OrderStatus.PartiallyAllocated, order2.Status);
         }
     }
 }

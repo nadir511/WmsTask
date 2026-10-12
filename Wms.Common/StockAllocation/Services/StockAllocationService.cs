@@ -3,6 +3,7 @@ using Wms.Outbound.Inventory.Interfaces;
 using Wms.Outbound.Order.Domain;
 using Wms.Outbound.Order.Interfaces;
 using Wms.Outbound.StockAllocation.Domain;
+using Wms.Outbound.StockAllocation.Interfaces;
 
 namespace Wms.Outbound.StockAllocation.Services;
 
@@ -13,25 +14,81 @@ public class StockAllocationService
     private readonly IInventoryService _inventoryService;
     private readonly IOrderService _orderService;
     private readonly TimeSpan _waveWindow;
-    private readonly Dictionary<(string OrderId, int LineId), int> _allocatedQtyByLine = [];
     private readonly SemaphoreSlim _allocationGate = new(1, 1);
-    private int _rerunRequested;
-    private int _waveScheduled;
+    private readonly IOrderCache _orderCache;
+    private readonly IAllocationLedger _allocationLedger;
 
-    public StockAllocationService(IInventoryService inventoryService, IOrderService orderService, TimeSpan? waveWindow = null)
+    public StockAllocationService(IInventoryService inventoryService, IOrderService orderService, IOrderCache orderCache, IAllocationLedger allocationLedger, TimeSpan? waveWindow = null)
     {
         _inventoryService = inventoryService;
         _orderService = orderService;
+        _orderCache = orderCache;
+        _allocationLedger = allocationLedger;
         _waveWindow = waveWindow ?? DefaultWaveWindow;
-        orderService.NewOrderReceived += OnNewOrderReceived;
+
+        _ = ConsumeNewOrdersAsync();
     }
 
-    public async Task<IReadOnlyList<StockAllocationResult>> AllocateReleaseOrdersAsync()
+   
+    private async Task ConsumeNewOrdersAsync()
+    {
+        var orderReader = _orderService.NewOrders;
+
+        while (await orderReader.WaitToReadAsync())
+        {
+            await Task.Delay(_waveWindow);
+
+            try
+            {
+                await RunAllocationAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Stock allocation failed: {ex}");
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<StockAllocationResult>> RunAllocationAsync()
     {
         await _allocationGate.WaitAsync();
         try
         {
-            return await RunUntilStableAsync();
+            var skus = (await _inventoryService.GetSkuListAsync()).ToList();
+            var skuById = skus.ToDictionary(sku => sku.SkuId);
+            var skusByProductId = BuildSkusByProductId(skus);
+
+            var results = new List<StockAllocationResult>();
+            var skusToUpdate = new Dictionary<string, Sku>();
+
+            var availableQtyBySku = BuildAvailableQuantities(skus);
+
+            var ordersToAllocate = GetOrdersToAllocate().ToList();
+
+            foreach (var order in ordersToAllocate)
+            {
+                var plan = TryBuildAllocationPlan(order, skusByProductId, availableQtyBySku, _allocationLedger);
+
+                if (order.CompleteDeliveryRequired && plan is null)
+                {
+                    UpdateOrderStatus(order, _allocationLedger);
+                    results.Add(new StockAllocationResult(order.OrderId, order.Status, 0));
+                    continue;
+                }
+
+                var committedPlan = plan ?? [];
+                CommitAllocationPlan(committedPlan, skuById, availableQtyBySku, skusToUpdate, _allocationLedger);
+
+                UpdateOrderStatus(order, _allocationLedger);
+                results.Add(new StockAllocationResult(
+                    order.OrderId,
+                    order.Status,
+                    committedPlan.Sum(allocation => allocation.Quantity)));
+            }
+
+            await Task.WhenAll(skusToUpdate.Values.Select(sku => _inventoryService.UpdateSkuAsync(sku)));
+
+            return results;
         }
         finally
         {
@@ -39,60 +96,12 @@ public class StockAllocationService
         }
     }
 
-    private async Task<IReadOnlyList<StockAllocationResult>> RunUntilStableAsync()
-    {
-        IReadOnlyList<StockAllocationResult> results;
-        do
-        {
-            Volatile.Write(ref _rerunRequested, 0);
-            results = await RunAllocationAsync();
-        } while (Volatile.Read(ref _rerunRequested) == 1);
-
-        return results;
-    }
-
-    private async Task<IReadOnlyList<StockAllocationResult>> RunAllocationAsync()
-    {
-        var orders = await _orderService.GetCachedOrderListAsync();
-        var skus = (await _inventoryService.GetSkuListAsync()).ToList();
-        var skuById = skus.ToDictionary(sku => sku.SkuId);
-
-        var results = new List<StockAllocationResult>();
-        var skusToUpdate = new Dictionary<string, Sku>();
-
-        var availableQtyBySku = BuildAvailableQuantities(skus);
-
-        foreach (var order in GetOrdersToAllocate(orders))
-        {
-            var plan = TryBuildAllocationPlan(order, skus, availableQtyBySku, _allocatedQtyByLine);
-
-            if (order.CompleteDeliveryRequired && plan is null)
-            {
-                UpdateOrderStatus(order, _allocatedQtyByLine);
-                results.Add(new StockAllocationResult(order.OrderId, order.Status, 0));
-                continue;
-            }
-
-            var committedPlan = plan ?? [];
-            CommitAllocationPlan(committedPlan, skuById, availableQtyBySku, _allocatedQtyByLine, skusToUpdate);
-
-            UpdateOrderStatus(order, _allocatedQtyByLine);
-            results.Add(new StockAllocationResult(
-                order.OrderId,
-                order.Status,
-                committedPlan.Sum(allocation => allocation.Quantity)));
-        }
-
-        await Task.WhenAll(skusToUpdate.Values.Select(sku => _inventoryService.UpdateSkuAsync(sku)));
-
-        return results;
-    }
-
-    private static IEnumerable<CustomerOrder> GetOrdersToAllocate(IEnumerable<CustomerOrder> orders) =>
-        orders
+    private IEnumerable<CustomerOrder> GetOrdersToAllocate() =>
+        _orderCache.Orders.Values
             .Where(order =>
-                order.Status == OrderStatus.Released ||
-                order.Status == OrderStatus.PartiallyAllocated)
+                (order.Status == OrderStatus.Released ||
+                order.Status == OrderStatus.PartiallyAllocated) &&
+                !order.IsCancled)
             .OrderByDescending(order => order.Priority)
             .ThenBy(order => order.OrderDate);
 
@@ -102,20 +111,25 @@ public class StockAllocationService
         return skus.ToDictionary(sku => sku.SkuId, sku => sku.ProductQuantity);
     }
 
+    private static Dictionary<string, List<Sku>> BuildSkusByProductId(IEnumerable<Sku> skus) =>
+        skus
+            .Where(sku => !sku.Location.IsLocked)
+            .GroupBy(sku => sku.Product.ProductId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
     private static List<OrderLineAllocation>? TryBuildAllocationPlan(
         CustomerOrder order,
-        IEnumerable<Sku> skus,
+        Dictionary<string, List<Sku>> skusByProductId,
         Dictionary<string, int> availableQtyBySku,
-        Dictionary<(string OrderId, int LineId), int> allocatedByLine)
+        IAllocationLedger allocationLedger)
     {
         var currentSkuAvailability = new Dictionary<string, int>(availableQtyBySku);
         var plan = new List<OrderLineAllocation>();
         var canFulfillOrder = true;
 
-        foreach (var line in order.Lines)
+        foreach (var line in order.Lines.Where(line => !line.IsCancelled))
         {
-            var allocationKey = (order.OrderId, line.LineId);
-            var outstanding = line.Quantity - allocatedByLine.GetValueOrDefault(allocationKey);
+            var outstanding = line.Quantity - allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId);
 
             //If the outstanding quantity is less than or equal to zero,
             //it means that the line has already been fully allocated, so we can skip to the next line.
@@ -123,10 +137,7 @@ public class StockAllocationService
                 continue;
 
             // Find all SKUs which are required to fulfill the order line.
-            var requiredSkus = skus
-                .Where(sku =>
-                    !sku.Location.IsLocked &&
-                    string.Equals(sku.Product.ProductId, line.ProductId, StringComparison.Ordinal));
+            var requiredSkus = skusByProductId.GetValueOrDefault(line.ProductId, []);
 
             foreach (var sku in requiredSkus)
             {
@@ -155,15 +166,12 @@ public class StockAllocationService
         IEnumerable<OrderLineAllocation> plan,
         Dictionary<string, Sku> skuById,
         Dictionary<string, int> availableQtyBySku,
-        Dictionary<(string OrderId, int LineId), int> allocatedByLine,
-        Dictionary<string, Sku> skusToUpdate)
+        Dictionary<string, Sku> skusToUpdate,
+        IAllocationLedger allocationLedger)
     {
         foreach (var allocation in plan)
         {
             availableQtyBySku[allocation.SkuId] -= allocation.Quantity;
-
-            var key = (allocation.OrderId, allocation.LineId);
-            allocatedByLine[key] = allocatedByLine.GetValueOrDefault(key) + allocation.Quantity;
 
             if (!skusToUpdate.TryGetValue(allocation.SkuId, out var sku))
             {
@@ -172,69 +180,31 @@ public class StockAllocationService
             }
 
             sku.ProductQuantity -= allocation.Quantity;
+
+            // Record the allocation in the ledger so that we can track which SKUs and quantities are committed to each order line.
+            allocationLedger.Record(allocation);
         }
     }
 
-    private static void UpdateOrderStatus(CustomerOrder order, Dictionary<(string OrderId, int LineId), int> allocatedByLine)
+    private static void UpdateOrderStatus(CustomerOrder order, IAllocationLedger allocationLedger)
     {
-        var allLinesFulfilled = order.Lines.All(line =>
-            allocatedByLine.GetValueOrDefault((order.OrderId, line.LineId)) >= line.Quantity);
+        var activeLines = order.Lines.Where(line => !line.IsCancelled).ToList();
+
+        // If every line is cancelled, there is nothing left to deliver.
+        var allLinesFulfilled = activeLines.Count == 0 ||
+            activeLines.All(line => allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId) >= line.Quantity);
 
         if (allLinesFulfilled)
         {
             order.Status = OrderStatus.ReadyForDelivery;
         }
-        else if (order.Lines.Any(line => allocatedByLine.GetValueOrDefault((order.OrderId, line.LineId)) > 0))
+        else if (activeLines.Any(line => allocationLedger.GetAllocatedQuantity(order.OrderId, line.LineId) > 0))
         {
             order.Status = OrderStatus.PartiallyAllocated;
         }
         else
         {
             order.Status = OrderStatus.Released;
-        }
-    }
-
-    private void OnNewOrderReceived(CustomerOrder order)
-    {
-        Volatile.Write(ref _rerunRequested, 1);
-
-        if (Interlocked.CompareExchange(ref _waveScheduled, 1, 0) == 0)
-        {
-            _ = ReleaseWaveAsync();
-        }
-    }
-
-    private async Task ReleaseWaveAsync()
-    {
-        try
-        {
-            await Task.Delay(_waveWindow);
-            await TriggerAllocationAsync();
-        }
-        finally
-        {
-            Volatile.Write(ref _waveScheduled, 0);
-        }
-    }
-
-    private async Task TriggerAllocationAsync()
-    {
-        if (!await _allocationGate.WaitAsync(0))
-        {
-            return;
-        }
-
-        try
-        {
-            await RunUntilStableAsync();
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Stock allocation failed: {ex}");
-        }
-        finally
-        {
-            _allocationGate.Release();
         }
     }
 }

@@ -5,5 +5,7 @@ namespace Wms.Outbound.Order.Interfaces
     public interface IOrderRepository
     {
         event Action<CustomerOrder> OrderReceived;
+
+        event Action<CustomerOrder> OrderOrLineCancellationRequest;
     }
 }

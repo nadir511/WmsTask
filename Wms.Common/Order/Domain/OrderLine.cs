@@ -1,6 +1,4 @@
-﻿using Wms.Outbound.Inventory;
-
-namespace Wms.Outbound.Order.Domain
+﻿namespace Wms.Outbound.Order.Domain
 {
     public class OrderLine
     {
@@ -8,6 +6,7 @@ namespace Wms.Outbound.Order.Domain
         private int _productId;
         public string ProductId { get => $"P-{_productId}"; set => _productId = int.Parse(value); }
         public int Quantity { get; set; }
+        public bool IsCancelled { get; set; }
         public OrderLine(int id, string productId, int quantity)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(quantity, 1);

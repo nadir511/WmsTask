@@ -4,6 +4,7 @@
     {
         Released,
         PartiallyAllocated,
-        ReadyForDelivery
+        ReadyForDelivery,
+        Cancelled
     }
 }
