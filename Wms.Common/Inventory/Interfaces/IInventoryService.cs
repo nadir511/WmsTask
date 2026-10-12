@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using Wms.Outbound.Inventory.Domain;
+﻿using Wms.Outbound.Inventory.Domain;
 
 namespace Wms.Outbound.Inventory.Interfaces
 {

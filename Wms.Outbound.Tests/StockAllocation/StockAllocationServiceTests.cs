@@ -210,7 +210,7 @@ namespace Wms.Outbound.Tests.StockAllocation
             Assert.Equal(OrderStatus.ReadyForDelivery, order.Status);
             Assert.Equal(0, sku.ProductQuantity);
         }
-
+        
         [Fact]
         public async Task RunAllocationAsync_WithOrderSplitAcrossTwoSkusOfSameProduct_AllocatesFromBothSkus()
         {
@@ -235,6 +235,36 @@ namespace Wms.Outbound.Tests.StockAllocation
             Assert.Equal(OrderStatus.ReadyForDelivery, order.Status);
             Assert.Equal(0, skuOne.ProductQuantity);
             Assert.Equal(30, skuTwo.ProductQuantity);
+        }
+
+        //<summery>
+        // This test is the example from the Task description document
+        //</summery>
+        [Fact]
+        public async Task RunAllocationAsync_WithOneSkuCoveringTwoLineItems_AllocatesBothLinesFromSameSku()
+        {
+            var inventoryService = Substitute.For<IInventoryService>();
+            var orderService = Substitute.For<IOrderService>();
+
+            var sku = TestDataFactory.CreateDefaultSku("SKU-001", 15);
+            inventoryService.GetSkuListAsync().Returns(new List<Sku> { sku });
+            inventoryService.UpdateSkuAsync(Arg.Any<Sku>()).Returns(true);
+
+            var lineOne = TestDataFactory.CreateDefaultOrderLine(1, "1", 5);
+            var lineTwo = TestDataFactory.CreateDefaultOrderLine(2, "1", 7);
+            var order = TestDataFactory.CreateDefaultOrder("ORD-001", orderLine: lineOne);
+            order.AddLine(lineTwo);
+
+            var orderCache = new OrderCache();
+            orderCache.AddOrUpdate(order);
+
+            var allocationService = new StockAllocationService(inventoryService, orderService, orderCache, new AllocationLedger());
+
+            await allocationService.RunAllocationAsync();
+
+            Assert.Equal(OrderStatus.ReadyForDelivery, order.Status);
+            // remaining: 15 - (5 + 7) = 3
+            Assert.Equal(3, sku.ProductQuantity); 
         }
 
         [Fact]
