@@ -8,7 +8,7 @@ namespace Wms.Outbound.Tests
 {
     public class TestDataFactory
     {
-        public static CustomerOrder CreateDefaultOrder(string orderId = "ORD-001", int quantity = 30, OrderLine orderLine = null, OrderPriority orderPriority = OrderPriority.High, bool completeDeliveryRequired = false)
+        public static CustomerOrder CreateDefaultOrder(string orderId = "ORD-001", int quantity = 30, OrderLine? orderLine = null, OrderPriority orderPriority = OrderPriority.High, bool completeDeliveryRequired = false)
         {
             return new CustomerOrder(
                 orderId,
@@ -17,18 +17,6 @@ namespace Wms.Outbound.Tests
                 orderPriority,
                 DateTime.Now,
                 completeDeliveryRequired);
-        }
-
-        public static List<CustomerOrder> GetOrderList()
-        {
-            return
-            [
-                CreateDefaultOrder("ORD-001", 30),
-                CreateDefaultOrder("ORD-002", 20),
-                CreateDefaultOrder("ORD-003", 40),
-                CreateDefaultOrder("ORD-004", 30),
-                CreateDefaultOrder("ORD-005", 10)
-            ];
         }
 
         public static WarehouseLocation CreateDefaultLocation(string locationId = "LOC-001", bool isLocked = false)
@@ -47,33 +35,12 @@ namespace Wms.Outbound.Tests
                 ProductName = productName
             };
         }
-        public static List<Product> GetProductList()
-        {
-            return
-            [
-                CreateDefaultProduct("1", "Barf"),
-                CreateDefaultProduct("2", "Puch"),
-                CreateDefaultProduct("3", "A-Sass"),
-                CreateDefaultProduct("4", "Shito"),
-                CreateDefaultProduct("5", "Bimbo")
-            ];
-        }
         public static OrderLine CreateDefaultOrderLine(int lineId = 1, string productId = "1", int quantity = 30)
         {
             return new OrderLine(lineId, productId, quantity);
         }
-        public static List<OrderLine> GetOrderLineList()
-        {
-            return
-            [
-                CreateDefaultOrderLine(1, "1", 30),
-                CreateDefaultOrderLine(2, "2", 20),
-                CreateDefaultOrderLine(3, "3", 40),
-                CreateDefaultOrderLine(4, "4", 30),
-                CreateDefaultOrderLine(5, "5", 10)
-            ];
-        }
-        public static Sku CreateDefaultSku(string skuId = "SKU-001", int quantity = 100, Product product = null, WarehouseLocation location = null)
+        
+        public static Sku CreateDefaultSku(string skuId = "SKU-001", int quantity = 100, Product? product = null, WarehouseLocation? location = null)
         {
             return new Sku(
                 skuId,
